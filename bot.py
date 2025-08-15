@@ -48,14 +48,16 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 @bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
-    # Inicializar usuarios ya conectados a voz
+    # Inicializar usuarios ya conectados a voz al iniciar el bot
     for guild in bot.guilds:
         for member in guild.members:
             if member.voice and not member.bot:
-                if str(member.id) not in tiempos:
-                    tiempos[str(member.id)] = {"tiempo": 0, "ultima_vez": None, "en_voz": False}
-                tiempos[str(member.id)]["en_voz"] = True
-                tiempos[str(member.id)]["ultima_vez"] = datetime.now().timestamp()
+                user_id = str(member.id)
+                if user_id not in tiempos:
+                    tiempos[user_id] = {"tiempo": 0, "ultima_vez": None, "en_voz": False}
+                tiempos[user_id]["en_voz"] = True
+                tiempos[user_id]["ultima_vez"] = datetime.now().timestamp()
+                print(f"🔊 {member.display_name} ya estaba en voz al iniciar")
     
     contar_tiempo.start()
     guardar_datos()
@@ -66,6 +68,7 @@ async def on_voice_state_update(member, before, after):
         return
     
     user_id = str(member.id)
+    ahora = datetime.now().timestamp()
     
     # Inicializar usuario si no existe
     if user_id not in tiempos:
@@ -74,30 +77,38 @@ async def on_voice_state_update(member, before, after):
     # Usuario se conecta a un canal de voz
     if before.channel is None and after.channel is not None:
         tiempos[user_id]["en_voz"] = True
-        tiempos[user_id]["ultima_vez"] = datetime.now().timestamp()
+        tiempos[user_id]["ultima_vez"] = ahora
         print(f"🔊 {member.display_name} se conectó a {after.channel.name}")
     
     # Usuario se desconecta de un canal de voz
     elif before.channel is not None and after.channel is None:
-        if tiempos[user_id]["en_voz"]:
-            tiempos[user_id]["en_voz"] = False
-            print(f"🔇 {member.display_name} se desconectó de {before.channel.name}")
+        if tiempos[user_id]["en_voz"] and tiempos[user_id]["ultima_vez"]:
+            # Calcular tiempo de la sesión que acaba de terminar
+            tiempo_sesion = int(ahora - tiempos[user_id]["ultima_vez"])
+            tiempos[user_id]["tiempo"] += tiempo_sesion
+            print(f"🔇 {member.display_name} se desconectó después de {tiempo_sesion}s")
+        
+        tiempos[user_id]["en_voz"] = False
+        tiempos[user_id]["ultima_vez"] = ahora
     
     # Usuario cambia de canal (sigue conectado)
     elif before.channel != after.channel and after.channel is not None:
-        tiempos[user_id]["ultima_vez"] = datetime.now().timestamp()
+        tiempos[user_id]["ultima_vez"] = ahora
         print(f"🔄 {member.display_name} se movió a {after.channel.name}")
     
     guardar_datos()
 
-@tasks.loop(seconds=30)  # Cada 30 segundos
+@tasks.loop(seconds=10)  # Cada 10 segundos para mayor precisión
 async def contar_tiempo():
     ahora = datetime.now().timestamp()
     
     for user_id, datos in tiempos.items():
-        if datos.get("en_voz", False):
-            datos["tiempo"] += 30
-            datos["ultima_vez"] = ahora
+        if datos.get("en_voz", False) and datos.get("ultima_vez"):
+            # Solo actualizar si ha pasado tiempo suficiente
+            tiempo_transcurrido = int(ahora - datos["ultima_vez"])
+            if tiempo_transcurrido >= 10:
+                datos["tiempo"] += tiempo_transcurrido
+                datos["ultima_vez"] = ahora
     
     guardar_datos()
 
