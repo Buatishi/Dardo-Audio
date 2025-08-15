@@ -10,7 +10,7 @@ from datetime import datetime
 # ------------------------------
 # CONFIGURACIÓN
 # ------------------------------
-TOKEN = ""  # <-- COMPLETAR CON TU TOKEN
+TOKEN = os.getenv('DISCORD_TOKEN')  # Variable de entorno
 PREFIX = "!"
 ARCHIVO_DATOS = "tiempos.json"
 
