@@ -14,9 +14,7 @@ TOKEN = os.getenv('DISCORD_TOKEN')  # Variable de entorno
 PREFIX = "!"
 ARCHIVO_DATOS = "tiempos.json"
 
-# ------------------------------
-# FUNCIONES DE DATOS
-# ------------------------------
+
 def cargar_datos():
     if os.path.exists(ARCHIVO_DATOS):
         with open(ARCHIVO_DATOS, "r") as f:
@@ -27,7 +25,6 @@ def guardar_datos():
     with open(ARCHIVO_DATOS, "w") as f:
         json.dump(tiempos, f, indent=4)
 
-# Estructura: {user_id: {"tiempo": segundos, "ultima_vez": timestamp, "en_voz": False}}
 tiempos = cargar_datos()
 
 def formatear_tiempo(segundos):
@@ -36,9 +33,8 @@ def formatear_tiempo(segundos):
     minutos, segundos = divmod(segundos, 60)
     return f"{dias:02}d, {horas:02}h, {minutos:02}m, {segundos:02}s"
 
-# ------------------------------
+
 # BOT DE DISCORD
-# ------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -48,7 +44,6 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 @bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
-    # Inicializar usuarios ya conectados a voz al iniciar el bot
     for guild in bot.guilds:
         for member in guild.members:
             if member.voice and not member.bot:
@@ -70,20 +65,17 @@ async def on_voice_state_update(member, before, after):
     user_id = str(member.id)
     ahora = datetime.now().timestamp()
     
-    # Inicializar usuario si no existe
     if user_id not in tiempos:
         tiempos[user_id] = {"tiempo": 0, "ultima_vez": None, "en_voz": False}
     
-    # Usuario se conecta a un canal de voz
     if before.channel is None and after.channel is not None:
         tiempos[user_id]["en_voz"] = True
         tiempos[user_id]["ultima_vez"] = ahora
         print(f"🔊 {member.display_name} se conectó a {after.channel.name}")
     
-    # Usuario se desconecta de un canal de voz
     elif before.channel is not None and after.channel is None:
         if tiempos[user_id]["en_voz"] and tiempos[user_id]["ultima_vez"]:
-            # Calcular tiempo de la sesión que acaba de terminar
+            # Calcula el tiempo de la sesion que acaba de terminar
             tiempo_sesion = int(ahora - tiempos[user_id]["ultima_vez"])
             tiempos[user_id]["tiempo"] += tiempo_sesion
             print(f"🔇 {member.display_name} se desconectó después de {tiempo_sesion}s")
@@ -98,7 +90,7 @@ async def on_voice_state_update(member, before, after):
     
     guardar_datos()
 
-@tasks.loop(seconds=10)  # Cada 10 segundos para mayor precisión
+@tasks.loop(seconds=10)  # Comprobar cada 10 segundos
 async def contar_tiempo():
     ahora = datetime.now().timestamp()
     
@@ -134,7 +126,7 @@ async def ranking(ctx):
         nombre = usuario.display_name if usuario else "Usuario desconocido"
         tiempo_formateado = formatear_tiempo(datos["tiempo"])
         
-        # Determinar si está actualmente en voz
+        # Determinar si esta actualmente en voz
         estado = "🔊 En línea" if datos.get("en_voz", False) else "⚫ Offline"
         
         mensaje += f"{i}. **{nombre}** — {tiempo_formateado} {estado}\n"
@@ -153,7 +145,7 @@ async def tiempo(ctx, miembro: discord.Member = None):
     datos = tiempos[user_id]
     tiempo_formateado = formatear_tiempo(datos["tiempo"])
     
-    # Información de última vez
+    # Informacion de ultima vez
     ultima_vez = datos.get("ultima_vez")
     if ultima_vez:
         fecha = datetime.fromtimestamp(ultima_vez).strftime("%d/%m/%Y %H:%M")
@@ -189,9 +181,7 @@ async def on_command_error(ctx, error):
         print(f"Error: {error}")
         await ctx.send("❌ Ha ocurrido un error al ejecutar el comando.")
 
-# ------------------------------
 # SERVIDOR WEB PARA UPTIMEROBOT
-# ------------------------------
 app = Flask(__name__)
 
 @app.route("/")
@@ -216,9 +206,6 @@ def mantener_web():
     t.daemon = True
     t.start()
 
-# ------------------------------
-# INICIO
-# ------------------------------
 if __name__ == "__main__":
     mantener_web()
     try:
