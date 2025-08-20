@@ -6,6 +6,8 @@ import asyncio
 from flask import Flask
 import threading
 from datetime import datetime
+import shutil
+import time
 
 # ------------------------------
 # CONFIGURACIÓN
@@ -13,18 +15,82 @@ from datetime import datetime
 TOKEN = os.getenv('DISCORD_TOKEN')  # Variable de entorno
 PREFIX = "!"
 ARCHIVO_DATOS = "tiempos.json"
+BACKUP_DATOS = "tiempos_backup.json"
+BACKUP_INTERVAL = 300  # 5 minutos
 
-
+# ------------------------------
+# FUNCIONES DE DATOS CON BACKUP
+# ------------------------------
 def cargar_datos():
-    if os.path.exists(ARCHIVO_DATOS):
-        with open(ARCHIVO_DATOS, "r") as f:
-            return json.load(f)
-    return {}
+    """Carga datos con sistema de backup automático"""
+    datos = {}
+    
+    try:
+        # Intentar cargar archivo principal
+        if os.path.exists(ARCHIVO_DATOS):
+            with open(ARCHIVO_DATOS, "r", encoding='utf-8') as f:
+                datos = json.load(f)
+            print(f"✅ Datos cargados desde {ARCHIVO_DATOS}")
+            
+        # Si no existe, intentar backup
+        elif os.path.exists(BACKUP_DATOS):
+            with open(BACKUP_DATOS, "r", encoding='utf-8') as f:
+                datos = json.load(f)
+            print(f"🔄 Datos recuperados desde backup {BACKUP_DATOS}")
+            # Restaurar archivo principal
+            guardar_datos_archivo(datos, ARCHIVO_DATOS)
+            
+        else:
+            print("📄 No hay datos previos, comenzando desde cero")
+            
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"❌ Error cargando {ARCHIVO_DATOS}: {e}")
+        
+        # Intentar backup si falla archivo principal
+        try:
+            if os.path.exists(BACKUP_DATOS):
+                with open(BACKUP_DATOS, "r", encoding='utf-8') as f:
+                    datos = json.load(f)
+                print(f"🆘 Datos recuperados desde backup después del error")
+                # Restaurar archivo principal
+                guardar_datos_archivo(datos, ARCHIVO_DATOS)
+        except Exception as backup_error:
+            print(f"❌ Error también en backup: {backup_error}")
+            print("🔄 Iniciando con datos vacíos")
+            
+    return datos
+
+def guardar_datos_archivo(datos, archivo):
+    """Guarda datos en un archivo específico de forma segura"""
+    try:
+        # Escribir a archivo temporal primero
+        archivo_temp = f"{archivo}.tmp"
+        with open(archivo_temp, "w", encoding='utf-8') as f:
+            json.dump(datos, f, indent=4, ensure_ascii=False)
+        
+        # Mover archivo temporal al final (operación atómica)
+        shutil.move(archivo_temp, archivo)
+        
+    except Exception as e:
+        print(f"❌ Error guardando {archivo}: {e}")
+        # Limpiar archivo temporal si existe
+        if os.path.exists(f"{archivo}.tmp"):
+            os.remove(f"{archivo}.tmp")
 
 def guardar_datos():
-    with open(ARCHIVO_DATOS, "w") as f:
-        json.dump(tiempos, f, indent=4)
+    """Guarda datos con backup automático"""
+    guardar_datos_archivo(tiempos, ARCHIVO_DATOS)
+    
+def crear_backup():
+    """Crea backup de los datos cada cierto tiempo"""
+    try:
+        if os.path.exists(ARCHIVO_DATOS):
+            shutil.copy2(ARCHIVO_DATOS, BACKUP_DATOS)
+            print(f"💾 Backup creado: {BACKUP_DATOS}")
+    except Exception as e:
+        print(f"❌ Error creando backup: {e}")
 
+# Estructura: {user_id: {"tiempo": segundos, "ultima_vez": timestamp, "en_voz": False}}
 tiempos = cargar_datos()
 
 def formatear_tiempo(segundos):
@@ -33,8 +99,9 @@ def formatear_tiempo(segundos):
     minutos, segundos = divmod(segundos, 60)
     return f"{dias:02}d, {horas:02}h, {minutos:02}m, {segundos:02}s"
 
-
+# ------------------------------
 # BOT DE DISCORD
+# ------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -44,6 +111,10 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 @bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
+    # Crear backup inicial de los datos existentes
+    crear_backup()
+    
+    # Inicializar usuarios ya conectados a voz al iniciar el bot
     for guild in bot.guilds:
         for member in guild.members:
             if member.voice and not member.bot:
@@ -54,8 +125,11 @@ async def on_ready():
                 tiempos[user_id]["ultima_vez"] = datetime.now().timestamp()
                 print(f"🔊 {member.display_name} ya estaba en voz al iniciar")
     
+    # Iniciar tareas automáticas
     contar_tiempo.start()
+    backup_automatico.start()
     guardar_datos()
+    print("🔄 Sistema de backup automático activado cada 5 minutos")
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -65,17 +139,20 @@ async def on_voice_state_update(member, before, after):
     user_id = str(member.id)
     ahora = datetime.now().timestamp()
     
+    # Inicializar usuario si no existe
     if user_id not in tiempos:
         tiempos[user_id] = {"tiempo": 0, "ultima_vez": None, "en_voz": False}
     
+    # Usuario se conecta a un canal de voz
     if before.channel is None and after.channel is not None:
         tiempos[user_id]["en_voz"] = True
         tiempos[user_id]["ultima_vez"] = ahora
         print(f"🔊 {member.display_name} se conectó a {after.channel.name}")
     
+    # Usuario se desconecta de un canal de voz
     elif before.channel is not None and after.channel is None:
         if tiempos[user_id]["en_voz"] and tiempos[user_id]["ultima_vez"]:
-            # Calcula el tiempo de la sesion que acaba de terminar
+            # Calcular tiempo de la sesión que acaba de terminar
             tiempo_sesion = int(ahora - tiempos[user_id]["ultima_vez"])
             tiempos[user_id]["tiempo"] += tiempo_sesion
             print(f"🔇 {member.display_name} se desconectó después de {tiempo_sesion}s")
@@ -90,7 +167,7 @@ async def on_voice_state_update(member, before, after):
     
     guardar_datos()
 
-@tasks.loop(seconds=10)  # Comprobar cada 10 segundos
+@tasks.loop(seconds=10)  # Cada 10 segundos para mayor precisión
 async def contar_tiempo():
     ahora = datetime.now().timestamp()
     
@@ -104,14 +181,19 @@ async def contar_tiempo():
     
     guardar_datos()
 
+# Task para crear backups automáticos
+@tasks.loop(seconds=BACKUP_INTERVAL)  # Cada 5 minutos
+async def backup_automatico():
+    crear_backup()
+
 @bot.command(name="ranking")
 async def ranking(ctx):
     if not tiempos:
         await ctx.send("📊 No hay datos de tiempo registrados aún.")
         return
     
-    # Filtrar solo usuarios con tiempo > 0
-    usuarios_con_tiempo = {k: v for k, v in tiempos.items() if v.get("tiempo", 0) > 0}
+    # Filtrar solo usuarios con tiempo >= 1 segundo
+    usuarios_con_tiempo = {k: v for k, v in tiempos.items() if v.get("tiempo", 0) >= 1}
     
     if not usuarios_con_tiempo:
         await ctx.send("📊 No hay usuarios con tiempo en voz registrado.")
@@ -119,17 +201,37 @@ async def ranking(ctx):
     
     ranking_lista = sorted(usuarios_con_tiempo.items(), key=lambda x: x[1]["tiempo"], reverse=True)
     
-    mensaje = "**🏆 Ranking de tiempo en voz:**\n\n"
+    # Crear mensaje con mejor formato estético
+    mensaje = "```\n"
+    mensaje += "🏆═══════════════════════════════════════════════════════🏆\n"
+    mensaje += "              📊 RANKING DE TIEMPO EN VOZ 📊              \n"
+    mensaje += "🏆═══════════════════════════════════════════════════════🏆\n\n"
     
-    for i, (user_id, datos) in enumerate(ranking_lista[:10], start=1):  # Top 10
+    # Mostrar TODOS los usuarios con al menos 1 segundo
+    for i, (user_id, datos) in enumerate(ranking_lista, start=1):
         usuario = ctx.guild.get_member(int(user_id))
         nombre = usuario.display_name if usuario else "Usuario desconocido"
         tiempo_formateado = formatear_tiempo(datos["tiempo"])
         
-        # Determinar si esta actualmente en voz
-        estado = "🔊 En línea" if datos.get("en_voz", False) else "⚫ Offline"
+        # Determinar emoji de posición y estado
+        if i == 1:
+            emoji_pos = "🥇"
+        elif i == 2:
+            emoji_pos = "🥈"
+        elif i == 3:
+            emoji_pos = "🥉"
+        else:
+            emoji_pos = f"{i:2d}."
         
-        mensaje += f"{i}. **{nombre}** — {tiempo_formateado} {estado}\n"
+        estado = "🔊" if datos.get("en_voz", False) else "⚫"
+        
+        # Ajustar formato para que se vea alineado  
+        nombre_fmt = nombre[:20].ljust(20) if len(nombre) <= 20 else nombre[:17] + "..."
+        mensaje += f"{emoji_pos} {nombre_fmt} │ {tiempo_formateado} {estado}\n"
+    
+    mensaje += "\n═══════════════════════════════════════════════════════\n"
+    mensaje += f"Total de usuarios registrados: {len(ranking_lista)}\n" 
+    mensaje += "```"
     
     await ctx.send(mensaje)
 
@@ -145,7 +247,7 @@ async def tiempo(ctx, miembro: discord.Member = None):
     datos = tiempos[user_id]
     tiempo_formateado = formatear_tiempo(datos["tiempo"])
     
-    # Informacion de ultima vez
+    # Información de última vez
     ultima_vez = datos.get("ultima_vez")
     if ultima_vez:
         fecha = datetime.fromtimestamp(ultima_vez).strftime("%d/%m/%Y %H:%M")
@@ -181,7 +283,9 @@ async def on_command_error(ctx, error):
         print(f"Error: {error}")
         await ctx.send("❌ Ha ocurrido un error al ejecutar el comando.")
 
+# ------------------------------
 # SERVIDOR WEB PARA UPTIMEROBOT
+# ------------------------------
 app = Flask(__name__)
 
 @app.route("/")
@@ -206,6 +310,9 @@ def mantener_web():
     t.daemon = True
     t.start()
 
+# ------------------------------
+# INICIO
+# ------------------------------
 if __name__ == "__main__":
     mantener_web()
     try:
